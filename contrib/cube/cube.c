@@ -96,6 +96,7 @@ bool		cube_contains_v0(NDBOX *a, NDBOX *b);
 bool		cube_overlap_v0(NDBOX *a, NDBOX *b);
 NDBOX	   *cube_union_v0(NDBOX *a, NDBOX *b);
 void		rt_cube_size(NDBOX *a, double *sz);
+void		rt_cube_perimeter(NDBOX *a, double *sz);
 NDBOX	   *g_cube_binary_union(NDBOX *r1, NDBOX *r2, int *sizep);
 bool		g_cube_leaf_consistent(NDBOX *key, NDBOX *query, StrategyNumber strategy);
 bool		g_cube_internal_consistent(NDBOX *key, NDBOX *query, StrategyNumber strategy);
@@ -421,6 +422,22 @@ g_cube_decompress(PG_FUNCTION_ARGS)
 }
 
 
+static float
+pack_float(const float value, const int realm)
+{
+  union {
+    float f;
+    struct { unsigned value:31, sign:1; } vbits;
+    struct { unsigned value:29, realm:2, sign:1; } rbits;
+  } a;
+
+  a.f = value;
+  a.rbits.value = a.vbits.value >> 2;
+  a.rbits.realm = realm;
+
+  return a.f;
+}
+
 /*
 ** The GiST Penalty method for boxes
 ** As in the R-tree paper, we use change in area as our penalty metric
@@ -441,9 +458,40 @@ g_cube_penalty(PG_FUNCTION_ARGS)
 	rt_cube_size(DatumGetNDBOX(origentry->key), &tmp2);
 	*result = (float) (tmp1 - tmp2);
 
-	/*
-	 * fprintf(stderr, "penalty\n"); fprintf(stderr, "\t%g\n", *result);
-	 */
+	/* Realm tricks are used only in case of IEEE754 support(IEC 60559) */
+
+	/* REALM 0: No extension is required, volume is zero, return edge	*/
+	/* REALM 1: No extension is required, return nonzero volume			*/
+	/* REALM 2: Volume extension is zero, return nonzero edge extension	*/
+	/* REALM 3: Volume extension is nonzero, return it					*/
+
+	if( *result == 0 )
+	{
+		double tmp3 = tmp1; /* remember entry volume */
+		rt_cube_perimeter(ud, &tmp1);
+		rt_cube_perimeter(DatumGetNDBOX(origentry->key), &tmp2);
+		*result = (float) (tmp1 - tmp2);
+		if( *result == 0 )
+		{
+			if( tmp3 != 0 )
+			{
+				*result = pack_float(tmp3, 1); /* REALM 1 */
+			}
+			else
+			{
+				*result = pack_float(tmp1, 0); /* REALM 0 */
+			}
+		}
+		else
+		{
+			*result = pack_float(*result, 2); /* REALM 2 */
+		}
+	}
+	else
+	{
+		*result = pack_float(*result, 3); /* REALM 3 */
+	}
+
 	PG_RETURN_FLOAT8(*result);
 }
 
@@ -887,6 +935,23 @@ rt_cube_size(NDBOX *a, double *size)
 		*size = 1.0;
 		for (i = 0; i < DIM(a); i++)
 			*size = (*size) * Abs(UR_COORD(a, i) - LL_COORD(a, i));
+	}
+	return;
+}
+
+
+void
+rt_cube_perimeter(NDBOX *a, double *size)
+{
+	int			i;
+
+	if (a == (NDBOX *) NULL)
+		*size = 0.0;
+	else
+	{
+		*size = 0.0;
+		for (i = 0; i < DIM(a); i++)
+			*size = (*size) + Abs(UR_COORD(a, i) - LL_COORD(a, i));
 	}
 	return;
 }
