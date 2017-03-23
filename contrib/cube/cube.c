@@ -11,7 +11,6 @@
 #include <float.h>
 #include <math.h>
 
-#include "access/gist.h"
 #include "access/stratnum.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -95,6 +94,9 @@ int32		cube_cmp_v0(NDBOX *a, NDBOX *b);
 bool		cube_contains_v0(NDBOX *a, NDBOX *b);
 bool		cube_overlap_v0(NDBOX *a, NDBOX *b);
 NDBOX	   *cube_union_v0(NDBOX *a, NDBOX *b);
+NDBOX	   *cube_intersect_v0(NDBOX *a, NDBOX *b);
+NDBOX	   *cube_union_n(NDBOX **a, int *places, int dim, int n);
+static void		rt_cube_edge(NDBOX *a, double *sz);
 void		rt_cube_size(NDBOX *a, double *sz);
 NDBOX	   *g_cube_binary_union(NDBOX *r1, NDBOX *r2, int *sizep);
 bool		g_cube_leaf_consistent(NDBOX *key, NDBOX *query, StrategyNumber strategy);
@@ -426,154 +428,194 @@ g_cube_penalty(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8(*result);
 }
 
+static int
+compare_boxes(const void* ap, const void* bp, void *argsp)
+{
+	double sa = 0, sb = 0;
+	int a = *((int*)ap);
+	int b = *((int*)bp);
+	SplitSortArgs* args = (SplitSortArgs*)argsp;
+	NDBOX *abox = args->vector[a];
+	NDBOX *bbox = args->vector[b];
+	int axis = args->axis;
 
+	if(DIM(abox)>axis)
+	{
+		if (args->compare_edge == 0)
+			sa = LL_COORD(abox, axis);
+		else if (args->compare_edge == 1)
+			sa = UR_COORD(abox, axis);
+		else
+			sa = LL_COORD(abox, axis) + UR_COORD(abox, axis);
+	}
+
+
+	if (DIM(bbox)>axis)
+	{
+		if (args->compare_edge == 0)
+			sb = LL_COORD(bbox, axis);
+		else if (args->compare_edge == 1)
+			sb = UR_COORD(bbox, axis);
+		else
+			sb = LL_COORD(bbox, axis) + UR_COORD(bbox, axis);
+	}
+
+	if (sa == sb) 
+		return 0;
+
+	// elog(DEBUG3, "Nonzero compare");
+	return (sa>sb) ? 1 : -1;
+}
+
+double g_split_goal(NDBOX **args,int* numbers, int dim, int n, int border, double max_edge)
+{
+	NDBOX *left = cube_union_n(args, numbers, dim, border);
+	NDBOX *right = cube_union_n(args, numbers + border, dim, n - border);
+	double wg, ledge, redge;
+	double nd = n; // to avoid overflow in huge pages
+	double wf = 1 - (nd/2 - border) * (nd/2 - border)/(nd * nd / 4);
+	if(cube_overlap_v0(left,right))
+	{
+		NDBOX *overlap = cube_intersect_v0(left, right);
+		rt_cube_size(overlap, &wg);
+
+		//elog(DEBUG5, "overlap %f wf %f", wg, wf);
+
+		//pfree(left);
+		//pfree(right);
+		//pfree(overlap);
+		return wg / wf;
+	}
+	rt_cube_edge(left, &ledge);
+	rt_cube_edge(right, &redge);
+	//pfree(left);
+	//pfree(right);
+	wg = ledge + redge;
+
+	//elog(DEBUG5, "edge %f wf %f result %f", wg, wf, (wg - max_edge) * wf);
+	return (wg - max_edge * 2) * wf;
+}
 
 /*
 ** The GiST PickSplit method for boxes
-** We use Guttman's poly time split algorithm
+** We use RR*-tree split algorithm
 */
 Datum
 g_cube_picksplit(PG_FUNCTION_ARGS)
 {
 	GistEntryVector *entryvec = (GistEntryVector *) PG_GETARG_POINTER(0);
 	GIST_SPLITVEC *v = (GIST_SPLITVEC *) PG_GETARG_POINTER(1);
+
 	OffsetNumber i,
 				j;
-	NDBOX	   *datum_alpha,
-			   *datum_beta;
-	NDBOX	   *datum_l,
-			   *datum_r;
-	NDBOX	   *union_d,
-			   *union_dl,
-			   *union_dr;
-	NDBOX	   *inter_d;
-	bool		firsttime;
-	double		size_alpha,
-				size_beta,
-				size_union,
-				size_inter;
-	double		size_waste,
-				waste;
-	double		size_l,
-				size_r;
-	int			nbytes;
-	OffsetNumber seed_1 = 1,
-				seed_2 = 2;
-	OffsetNumber *left,
-			   *right;
-	OffsetNumber maxoff;
 
-	maxoff = entryvec->n - 2;
-	nbytes = (maxoff + 2) * sizeof(OffsetNumber);
-	v->spl_left = (OffsetNumber *) palloc(nbytes);
-	v->spl_right = (OffsetNumber *) palloc(nbytes);
+	SplitSortArgs sortargs;
+	int n = entryvec->n - FirstOffsetNumber;
+	int *numbers = (int*)palloc(n*sizeof(int));
+	int *best_numbers = (int*)palloc(n*sizeof(int));
+	double bestw = DBL_MAX;
+	int bestBorder = -1;
+	int dim = 0;
+	int bestaxis = -1;
+	double max_edge;
 
-	firsttime = true;
-	waste = 0.0;
+	//elog(DEBUG2, "Invoke split n: %d", n);
 
-	for (i = FirstOffsetNumber; i < maxoff; i = OffsetNumberNext(i))
+	sortargs.vector = (NDBOX**)palloc(n * sizeof(NDBOX*));
+
+	for (i = 0; i < n; i++)
 	{
-		datum_alpha = DatumGetNDBOX(entryvec->vector[i].key);
-		for (j = OffsetNumberNext(i); j <= maxoff; j = OffsetNumberNext(j))
+		numbers[i] = i;
+		sortargs.vector[i] = DatumGetNDBOX(entryvec->vector[i + FirstOffsetNumber].key);
+		if (DIM(sortargs.vector[i]) > dim)
+			dim = DIM(sortargs.vector[i]);
+	}
+
+
+	//elog(DEBUG2, "Calc max perimeter");
+	rt_cube_edge(cube_union_n(sortargs.vector, numbers, dim, n), &max_edge);
+	//elog(DEBUG3, "Max edge %f",max_edge);
+
+	for (i = 0; i < dim; i++)
+	{
+		OffsetNumber border;
+		OffsetNumber startBorder = floor(0.2 * n);
+		OffsetNumber endBorder;
+		if (startBorder == 0)
+			startBorder = 1; // this is split to nonempty parts
+		endBorder = n - startBorder;
+		sortargs.axis = i;
+		//elog(DEBUG3, "Inspect dimension %d", i);
+
+		sortargs.compare_edge = 0;
+		qsort_arg(numbers, n, sizeof(int), compare_boxes, (void*)&sortargs);
+
+		for (border = startBorder; border < endBorder; border++)
 		{
-			datum_beta = DatumGetNDBOX(entryvec->vector[j].key);
+			double w = g_split_goal(sortargs.vector, numbers, dim, n, border,max_edge);
 
-			/* compute the wasted space by unioning these guys */
-			/* size_waste = size_union - size_inter; */
-			union_d = cube_union_v0(datum_alpha, datum_beta);
-			rt_cube_size(union_d, &size_union);
-			inter_d = DatumGetNDBOX(DirectFunctionCall2(cube_inter,
-						  entryvec->vector[i].key, entryvec->vector[j].key));
-			rt_cube_size(inter_d, &size_inter);
-			size_waste = size_union - size_inter;
-
-			/*
-			 * are these a more promising split than what we've already seen?
-			 */
-
-			if (size_waste > waste || firsttime)
+			//elog(DEBUG4, "border %d w %f", border, w);
+			if(w < bestw)
 			{
-				waste = size_waste;
-				seed_1 = i;
-				seed_2 = j;
-				firsttime = false;
+				bestw = w;
+				bestBorder = border;
+				if(i != bestaxis)
+				{
+					memmove(best_numbers, numbers, n * sizeof(int));
+					bestaxis = i;
+				}
+			}
+		}
+
+		sortargs.compare_edge = 1;
+		qsort_arg(numbers, n, sizeof(int), compare_boxes, (void*)&sortargs);
+
+		for (border = startBorder; border < endBorder; border++)
+		{
+			double w = g_split_goal(sortargs.vector, numbers, dim, n, border, max_edge);
+			if (w < bestw)
+			{
+				bestw = w;
+				bestBorder = border;
+				if (i != bestaxis)
+				{
+					memmove(best_numbers, numbers, n * sizeof(int));
+					bestaxis = i;
+				}
 			}
 		}
 	}
 
-	left = v->spl_left;
-	v->spl_nleft = 0;
-	right = v->spl_right;
-	v->spl_nright = 0;
+	//elog(DEBUG3, "Bestborder %d axis %d bestw %f", bestBorder, bestaxis, bestw);
+	v->spl_nleft = bestBorder;
+	v->spl_nright = n - bestBorder;
+	v->spl_left = (OffsetNumber *)palloc((v->spl_nleft + 1)*sizeof(OffsetNumber));
+	v->spl_right = (OffsetNumber *)palloc((v->spl_nright + 1)*sizeof(OffsetNumber));
+	v->spl_left[v->spl_nleft] = FirstOffsetNumber;
+	v->spl_right[v->spl_nright] = FirstOffsetNumber;
 
-	datum_alpha = DatumGetNDBOX(entryvec->vector[seed_1].key);
-	datum_l = cube_union_v0(datum_alpha, datum_alpha);
-	rt_cube_size(datum_l, &size_l);
-	datum_beta = DatumGetNDBOX(entryvec->vector[seed_2].key);
-	datum_r = cube_union_v0(datum_beta, datum_beta);
-	rt_cube_size(datum_r, &size_r);
-
-	/*
-	 * Now split up the regions between the two seeds.  An important property
-	 * of this split algorithm is that the split vector v has the indices of
-	 * items to be split in order in its left and right vectors.  We exploit
-	 * this property by doing a merge in the code that actually splits the
-	 * page.
-	 *
-	 * For efficiency, we also place the new index tuple in this loop. This is
-	 * handled at the very end, when we have placed all the existing tuples
-	 * and i == maxoff + 1.
-	 */
-
-	maxoff = OffsetNumberNext(maxoff);
-	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
+	v->spl_ldatum = PointerGetDatum(cube_union_n(sortargs.vector, best_numbers, dim, bestBorder));
+	v->spl_rdatum = PointerGetDatum(cube_union_n(sortargs.vector, best_numbers + bestBorder, dim, n - bestBorder));
+	
+	//elog(DEBUG2, "Picksplit left: %d", v->spl_nleft);
+	for (i = 0; i < v->spl_nleft; i++)
 	{
-		/*
-		 * If we've already decided where to place this item, just put it on
-		 * the right list.  Otherwise, we need to figure out which page needs
-		 * the least enlargement in order to store the item.
-		 */
-
-		if (i == seed_1)
-		{
-			*left++ = i;
-			v->spl_nleft++;
-			continue;
-		}
-		else if (i == seed_2)
-		{
-			*right++ = i;
-			v->spl_nright++;
-			continue;
-		}
-
-		/* okay, which page needs least enlargement? */
-		datum_alpha = DatumGetNDBOX(entryvec->vector[i].key);
-		union_dl = cube_union_v0(datum_l, datum_alpha);
-		union_dr = cube_union_v0(datum_r, datum_alpha);
-		rt_cube_size(union_dl, &size_alpha);
-		rt_cube_size(union_dr, &size_beta);
-
-		/* pick which page to add it to */
-		if (size_alpha - size_l < size_beta - size_r)
-		{
-			datum_l = union_dl;
-			size_l = size_alpha;
-			*left++ = i;
-			v->spl_nleft++;
-		}
-		else
-		{
-			datum_r = union_dr;
-			size_r = size_beta;
-			*right++ = i;
-			v->spl_nright++;
-		}
+		v->spl_left[i] = best_numbers[i] + FirstOffsetNumber;
+		
+		//elog(DEBUG3, "%d : %d", i, v->spl_left[i]);
 	}
-	*left = *right = FirstOffsetNumber; /* sentinel value, see dosplit() */
 
-	v->spl_ldatum = PointerGetDatum(datum_l);
-	v->spl_rdatum = PointerGetDatum(datum_r);
+	//elog(DEBUG2, "Picksplit right: %d", v->spl_nright);
+	for (i = 0; i < v->spl_nright; i++)
+	{
+		v->spl_right[i] = best_numbers[i + bestBorder] + FirstOffsetNumber;
+
+		//elog(DEBUG3, "%d : %d", i, v->spl_right[i]);
+	}
+
+	//pfree(sortargs.vector);
+	//pfree(best_numbers);
+	//pfree(numbers);
 
 	PG_RETURN_POINTER(v);
 }
@@ -732,6 +774,127 @@ cube_union_v0(NDBOX *a, NDBOX *b)
 	return (result);
 }
 
+NDBOX *
+cube_intersect_v0(NDBOX *a, NDBOX *b)
+{
+	int			i;
+	NDBOX	   *result;
+	int			dim;
+	int			size;
+
+	/* trivial case */
+	if (a == b)
+		return a;
+
+	/* swap the arguments if needed, so that 'a' is always larger than 'b' */
+	if (DIM(a) < DIM(b))
+	{
+		NDBOX	   *tmp = b;
+
+		b = a;
+		a = tmp;
+	}
+	dim = DIM(a);
+
+	size = CUBE_SIZE(dim);
+	result = palloc0(size);
+	SET_VARSIZE(result, size);
+	SET_DIM(result, dim);
+
+	/* First compute the union of the dimensions present in both args */
+	for (i = 0; i < DIM(b); i++)
+	{
+		result->x[i] = Max(
+			Min(LL_COORD(a, i), UR_COORD(a, i)),
+			Min(LL_COORD(b, i), UR_COORD(b, i))
+			);
+		result->x[i + DIM(a)] = Min(
+			Max(LL_COORD(a, i), UR_COORD(a, i)),
+			Max(LL_COORD(b, i), UR_COORD(b, i))
+			);
+	}
+	/* continue on the higher dimensions only present in 'a' */
+	for (; i < DIM(a); i++)
+	{
+		result->x[i] = Max(0,
+			Min(LL_COORD(a, i), UR_COORD(a, i))
+			);
+		result->x[i + dim] = Min(0,
+			Max(LL_COORD(a, i), UR_COORD(a, i))
+			);
+	}
+
+	/*
+	* Check if the result was in fact a point, and set the flag in the datum
+	* accordingly. (we don't bother to repalloc it smaller)
+	*/
+	if (cube_is_point_internal(result))
+	{
+		size = POINT_SIZE(dim);
+		SET_VARSIZE(result, size);
+		SET_POINT_BIT(result);
+	}
+
+	return (result);
+}
+
+
+
+NDBOX *
+cube_union_n(NDBOX **a, int *places, int dim, int n)
+{
+	int			i, o;
+	NDBOX	   *result;
+	int			size;
+
+	size = CUBE_SIZE(dim);
+	result = palloc0(size);
+	SET_VARSIZE(result, size);
+	SET_DIM(result, dim);
+
+	for (i = 0; i < dim; i++)
+	{
+		result->x[i] = DBL_MAX;
+		result->x[i + dim] = DBL_MIN;
+	}
+
+	for (o = 0; o < n; o++)
+		for (i = 0; i < dim; i++)
+		{
+			if (DIM(a[places[o]]) <= i)
+				break;
+			result->x[i] = Min(
+				Min(LL_COORD(a[places[o]], i), UR_COORD(a[places[o]], i)),
+				LL_COORD(result, i)
+				);
+			result->x[i + dim] = Max(
+				Max(LL_COORD(a[places[o]], i), UR_COORD(a[places[o]], i)),
+				UR_COORD(result, i)
+				);
+		}
+	for (i = 0; i < dim; i++)
+	{
+		if(result->x[i] == DBL_MAX && result->x[i + dim] == DBL_MIN)
+		{
+			result->x[i] = 0;
+			result->x[i + dim] = 0;
+		}
+	}
+
+	/*
+	* Check if the result was in fact a point, and set the flag in the datum
+	* accordingly. (we don't bother to repalloc it smaller)
+	*/
+	if (cube_is_point_internal(result))
+	{
+		size = POINT_SIZE(dim);
+		SET_VARSIZE(result, size);
+		SET_POINT_BIT(result);
+	}
+
+	return (result);
+}
+
 Datum
 cube_union(PG_FUNCTION_ARGS)
 {
@@ -836,6 +999,21 @@ cube_size(PG_FUNCTION_ARGS)
 	rt_cube_size(a, &result);
 	PG_FREE_IF_COPY(a, 0);
 	PG_RETURN_FLOAT8(result);
+}
+
+static void
+rt_cube_edge(NDBOX *a, double *size)
+{
+	int			i;
+	double		result = 0;
+
+	if (a != (NDBOX *)NULL)
+	{
+		for (i = 0; i < DIM(a); i++)
+			result += Abs(UR_COORD(a, i) - LL_COORD(a, i));
+	}
+	*size = result;
+	return;
 }
 
 void

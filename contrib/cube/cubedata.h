@@ -1,4 +1,5 @@
 /* contrib/cube/cubedata.h */
+#include "access/gist.h"
 
 /*
  * This limit is pretty arbitrary, but don't make it so large that you
@@ -67,3 +68,10 @@ extern void cube_scanner_finish(void);
 
 /* in cubeparse.y */
 extern int	cube_yyparse(NDBOX **result);
+
+typedef struct SplitSortArgs
+{
+	int axis;
+	int compare_edge; // 0 - lowes, 1 - uppers, 2 - middles
+	NDBOX **vector;
+} SplitSortArgs;
