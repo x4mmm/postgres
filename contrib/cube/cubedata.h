@@ -67,3 +67,5 @@ extern void cube_scanner_finish(void);
 
 /* in cubeparse.y */
 extern int	cube_yyparse(NDBOX **result);
+
+extern bool		cube_overlap_v0(NDBOX *a, NDBOX *b);

@@ -93,7 +93,6 @@ PG_FUNCTION_INFO_V1(cube_enlarge);
 */
 static	int32		cube_cmp_v0(NDBOX *a, NDBOX *b);
 static	bool		cube_contains_v0(NDBOX *a, NDBOX *b);
-static	bool		cube_overlap_v0(NDBOX *a, NDBOX *b);
 static	NDBOX	   *cube_union_v0(NDBOX *a, NDBOX *b);
 static	void		rt_cube_size(NDBOX *a, double *sz);
 static	NDBOX	   *g_cube_binary_union(NDBOX *r1, NDBOX *r2, int *sizep);
@@ -1173,7 +1172,7 @@ cube_contained(PG_FUNCTION_ARGS)
 
 /* Overlap */
 /* Box(A) Overlap Box(B) IFF (pt(a)LL < pt(B)UR) && (pt(b)LL < pt(a)UR) */
-static	bool
+bool
 cube_overlap_v0(NDBOX *a, NDBOX *b)
 {
 	int			i;
@@ -1776,3 +1775,6 @@ cube_c_f8_f8(PG_FUNCTION_ARGS)
 	PG_FREE_IF_COPY(cube, 0);
 	PG_RETURN_NDBOX(result);
 }
+
+
+
