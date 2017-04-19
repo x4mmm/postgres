@@ -128,16 +128,16 @@ setupFirstcall(FuncCallContext *funcctx, text *names[2])
 	GistNSN		parentnsn = InvalidNSN;
 	int			i;
 
-	elog(LOG,"setupFirstcall 1");
+
 	/* Switch to persistent memory context */
 	oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
-	elog(LOG,"setupFirstcall 2");
+
 	/* Allocate crossmarch context and fill it with scan parameters */
 	ctx = (CrossmatchContext *) palloc0(sizeof(CrossmatchContext));
 	ctx->context = funcctx->multi_call_memory_ctx;
 
-	elog(LOG,"setupFirstcall 2.1");
+
 	funcctx->user_fctx = (void *) ctx;
 
 	/* Open both indexes */
@@ -152,7 +152,6 @@ setupFirstcall(FuncCallContext *funcctx, text *names[2])
 		ctx->indexes[i] = indexOpen(relvar);
 		pfree(relname);
 	}
-	elog(LOG,"setupFirstcall 3");
 	/*
 	 * Add first pending pair of pages: we start scan both indexes from their
 	 * roots.
@@ -198,7 +197,6 @@ setupFirstcallNode(CrossmatchContext *ctx, Oid idx1, Oid idx2)
 void
 closeCall(FuncCallContext *funcctx)
 {
-	elog(LOG, "close call");
 	CrossmatchContext *ctx = (CrossmatchContext *) (funcctx->user_fctx);
 
 	/* Close indexes */
@@ -649,13 +647,11 @@ spatialjoin(PG_FUNCTION_ARGS)
 void
 crossmatch(CrossmatchContext *ctx, ItemPointer values)
 {
-	elog(LOG, "crossmatch call");
 	/* Scan pending pairs until we have some result pairs */
 	while (ctx->resultsPairs == NIL && ctx->pendingPairs != NIL)
 	{
 		PendingPair blockNumberPair;
 
-		elog(LOG, "crossmatch call while");
 
 		blockNumberPair = *((PendingPair *) linitial(ctx->pendingPairs));
 		pfree(linitial(ctx->pendingPairs));
@@ -665,7 +661,6 @@ crossmatch(CrossmatchContext *ctx, ItemPointer values)
 					 blockNumberPair.parentlsn1, blockNumberPair.parentlsn2);
 	}
 
-	elog(LOG, "crossmatch call 1");
 	/* Return next result pair if any. Otherwise close SRF. */
 	if (ctx->resultsPairs != NIL)
 	{
@@ -684,5 +679,4 @@ crossmatch(CrossmatchContext *ctx, ItemPointer values)
 		ItemPointerSetInvalid(&values[1]);
 	}
 
-	elog(LOG, "crossmatch call 2");
 }

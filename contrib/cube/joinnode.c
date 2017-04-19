@@ -64,21 +64,14 @@ get_spoint_attnums(OpExpr *fexpr, RelOptInfo *outer, RelOptInfo *inner,
 
 	Assert(outer->relid != 0 && inner->relid != 0);
 
-	elog(LOG,"get_spoint_attnums in");
+	Var *arg = (Var *) linitial(fexpr->args);
 
-		Var *arg = (Var *) linitial(fexpr->args);
-
-		elog(LOG,"get_spoint_attnums 1");
-
-		if (arg->varno == outer->relid)
+			if (arg->varno == outer->relid)
 			*outer_spoint = arg->varoattno;
 
-		elog(LOG,"get_spoint_attnums 2");
-
-		if (arg->varno == inner->relid)
+			if (arg->varno == inner->relid)
 			*inner_spoint = arg->varoattno;
 
-		elog(LOG,"get_spoint_attnums middle");
 
 		arg = (Var *) lsecond(fexpr->args);
 
@@ -88,7 +81,6 @@ get_spoint_attnums(OpExpr *fexpr, RelOptInfo *outer, RelOptInfo *inner,
 				if (arg->varno == inner->relid)
 					*inner_spoint = arg->varoattno;
 
-	elog(LOG,"get_spoint_attnums out");
 }
 
 static Path *
@@ -143,7 +135,6 @@ create_crossmatch_path(PlannerInfo *root,
 	Assert(outerrelid != InvalidOid);
 	Assert(innerrelid != InvalidOid);
 
-	elog(LOG, "create_crossmatch_path");
 
 	/* Relations should be different */
 	if (outerrel->relid == innerrel->relid)
@@ -154,8 +145,6 @@ create_crossmatch_path(PlannerInfo *root,
 	{
 		return;
 	}
-
-	elog(LOG, "create_crossmatch_path DO");
 
 	result = palloc0(sizeof(CrossmatchJoinPath));
 	NodeSetTag(result, T_CustomPath);
@@ -215,7 +204,6 @@ try_crossmatch_path(RestrictInfo *restrInfo,
 
 	required_outer = calc_nestloop_required_outer(outer_path, inner_path);
 
-	elog(LOG, "try_crossmatch_path middle");
 	param_info = get_joinrel_parampathinfo(root,
 										   joinrel,
 										   outer_path,
@@ -227,7 +215,6 @@ try_crossmatch_path(RestrictInfo *restrInfo,
 	get_spoint_attnums(opExpr, outerrel, innerrel,
 					   &outer_spoint, &inner_spoint);
 
-	elog(LOG, "try_crossmatch_path almost end");
 	create_crossmatch_path(root, joinrel, outer_path, inner_path,
 						   param_info, restrict_clauses, required_outer,
 						   outer_spoint, inner_spoint);
@@ -280,8 +267,6 @@ join_pathlist_hook(PlannerInfo *root,
 			arg1 = linitial(opExpr->args);
 			arg2 = lsecond(opExpr->args);
 
-			elog(LOG, "op %d", opExpr->opno);
-
 
 			if(opExpr->opno == 16423)
 			{
@@ -307,7 +292,6 @@ join_pathlist_hook(PlannerInfo *root,
 			}*/
 		}
 	}
-	elog(LOG, "Leaving hook");
 }
 
 static Plan *
@@ -374,13 +358,11 @@ static Node *
 crossmatch_create_scan_state(CustomScan *node)
 {
 	CrossmatchScanState	*scan_state = palloc0(sizeof(CrossmatchScanState));
-	elog(LOG,"crossmatch_create_scan_state");
 
 	NodeSetTag(scan_state, T_CustomScanState);
 	scan_state->css.flags = node->flags;
 	scan_state->css.methods = &crossmatch_exec_methods;
 
-	elog(LOG,"crossmatch_create_scan_state 1");
 	/* Save scan tlist for join relation */
 	scan_state->scan_tlist = node->custom_scan_tlist;
 
@@ -389,11 +371,9 @@ crossmatch_create_scan_state(CustomScan *node)
 	scan_state->inner_idx = lthird_oid(linitial(node->custom_private));
 	scan_state->inner_rel = lfourth_oid(linitial(node->custom_private));
 
-	elog(LOG,"crossmatch_create_scan_state 2");
 	scan_state->outer_relid = intVal(lsecond(node->custom_private));
 	scan_state->inner_relid = intVal(lthird(node->custom_private));
 
-	elog(LOG,"crossmatch_create_scan_state 3");
 	return (Node *) scan_state;
 }
 
@@ -401,24 +381,20 @@ crossmatch_create_scan_state(CustomScan *node)
 static void
 crossmatch_begin(CustomScanState *node, EState *estate, int eflags)
 {
-	elog(LOG,"crossmatch_begin");
 	CrossmatchScanState	   *scan_state = (CrossmatchScanState *) node;
 	CrossmatchContext	   *ctx = (CrossmatchContext *) palloc0(sizeof(CrossmatchContext));
 	int						nlist = list_length(scan_state->scan_tlist);
 
-	elog(LOG,"crossmatch_begin 1");
 	scan_state->ctx = ctx;
 	setupFirstcallNode(ctx, scan_state->outer_idx,
 				   scan_state->inner_idx);
 
-	elog(LOG,"crossmatch_begin 2");
 	scan_state->outer = heap_open(scan_state->outer_rel, AccessShareLock);
 	scan_state->inner = heap_open(scan_state->inner_rel, AccessShareLock);
 
 	scan_state->values = palloc0(sizeof(Datum) * nlist);
 	scan_state->nulls = palloc0(sizeof(bool) * nlist);
 
-	elog(LOG,"crossmatch_begin 3");
 	/* Store blank tuple in case scan tlist is empty */
 	if (scan_state->scan_tlist == NIL)
 	{
@@ -434,7 +410,6 @@ crossmatch_begin(CustomScanState *node, EState *estate, int eflags)
 static FetchTidPairState
 fetch_next_pair(CrossmatchScanState *scan_state)
 {
-	elog(LOG,"fetch_next_pair");
 	ScanState		   *ss = &scan_state->css.ss;
 	TupleTableSlot	   *slot = ss->ss_ScanTupleSlot;
 	TupleDesc			tupdesc = ss->ss_ScanTupleSlot->tts_tupleDescriptor;
@@ -519,7 +494,6 @@ fetch_next_pair(CrossmatchScanState *scan_state)
 static TupleTableSlot *
 crossmatch_exec(CustomScanState *node)
 {
-	elog(LOG,"crossmatch_exec");
 	CrossmatchScanState	   *scan_state = (CrossmatchScanState *) node;
 	TupleTableSlot		   *scanSlot = node->ss.ss_ScanTupleSlot;
 
@@ -626,18 +600,18 @@ crossmatch_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 void
 _PG_init(void)
 {
-	elog(LOG, "loading custom cube");
+	elog(LOG, "loading spatial join");
 
 	set_join_pathlist_next = set_join_pathlist_hook;
 	set_join_pathlist_hook = join_pathlist_hook;
 
-	crossmatch_path_methods.CustomName				= "CrossmatchJoin";
+	crossmatch_path_methods.CustomName				= "SpatialJoin";
 	crossmatch_path_methods.PlanCustomPath			= create_crossmatch_plan;
 
-	crossmatch_plan_methods.CustomName 				= "CrossmatchJoin";
+	crossmatch_plan_methods.CustomName 				= "SpatialJoin";
 	crossmatch_plan_methods.CreateCustomScanState	= crossmatch_create_scan_state;
 
-	crossmatch_exec_methods.CustomName				= "CrossmatchJoin";
+	crossmatch_exec_methods.CustomName				= "SpatialJoin";
 	crossmatch_exec_methods.BeginCustomScan			= crossmatch_begin;
 	crossmatch_exec_methods.ExecCustomScan			= crossmatch_exec;
 	crossmatch_exec_methods.EndCustomScan			= crossmatch_end;
