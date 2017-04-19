@@ -52,10 +52,10 @@ addPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 			   GistNSN parentlsn1, GistNSN parentlsn2)
 {
 	PendingPair *blockNumberPair;
-	MemoryContext oldcontext;
+	//MemoryContext oldcontext;
 
 	/* Switch to persistent memory context */
-	oldcontext = MemoryContextSwitchTo(ctx->context);
+	//oldcontext = MemoryContextSwitchTo(ctx->context);
 
 	/* Add pending pair */
 	blockNumberPair = (PendingPair *) palloc(sizeof(PendingPair));
@@ -66,7 +66,7 @@ addPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 	ctx->pendingPairs = lcons(blockNumberPair, ctx->pendingPairs);
 
 	/* Return old memory context */
-	MemoryContextSwitchTo(oldcontext);
+	//MemoryContextSwitchTo(oldcontext);
 }
 
 /*
@@ -76,10 +76,10 @@ static void
 addResultPair(CrossmatchContext *ctx, ItemPointer iptr1, ItemPointer iptr2)
 {
 	ResultPair *itemPointerPair;
-	MemoryContext oldcontext;
+	//MemoryContext oldcontext;
 
 	/* Switch to persistent memory context */
-	oldcontext = MemoryContextSwitchTo(ctx->context);
+	//oldcontext = MemoryContextSwitchTo(ctx->context);
 
 	/* Add result pair */
 	itemPointerPair = (ResultPair *)
@@ -89,7 +89,7 @@ addResultPair(CrossmatchContext *ctx, ItemPointer iptr1, ItemPointer iptr2)
 	ctx->resultsPairs = lappend(ctx->resultsPairs, itemPointerPair);
 
 	/* Return old memory context */
-	MemoryContextSwitchTo(oldcontext);
+	//MemoryContextSwitchTo(oldcontext);
 }
 
 /*
@@ -128,13 +128,16 @@ setupFirstcall(FuncCallContext *funcctx, text *names[2])
 	GistNSN		parentnsn = InvalidNSN;
 	int			i;
 
+	elog(LOG,"setupFirstcall 1");
 	/* Switch to persistent memory context */
 	oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
+	elog(LOG,"setupFirstcall 2");
 	/* Allocate crossmarch context and fill it with scan parameters */
 	ctx = (CrossmatchContext *) palloc0(sizeof(CrossmatchContext));
 	ctx->context = funcctx->multi_call_memory_ctx;
 
+	elog(LOG,"setupFirstcall 2.1");
 	funcctx->user_fctx = (void *) ctx;
 
 	/* Open both indexes */
@@ -149,7 +152,7 @@ setupFirstcall(FuncCallContext *funcctx, text *names[2])
 		ctx->indexes[i] = indexOpen(relvar);
 		pfree(relname);
 	}
-
+	elog(LOG,"setupFirstcall 3");
 	/*
 	 * Add first pending pair of pages: we start scan both indexes from their
 	 * roots.
@@ -168,15 +171,43 @@ setupFirstcall(FuncCallContext *funcctx, text *names[2])
 	MemoryContextSwitchTo(oldcontext);
 }
 
+
+void
+setupFirstcallNode(CrossmatchContext *ctx, Oid idx1, Oid idx2)
+{
+	GistNSN		parentnsn = InvalidNSN;
+
+	ctx->box = NULL;
+
+	Assert(idx1 != idx2);
+
+	ctx->indexes[0] = index_open(idx1, AccessShareLock);
+	ctx->indexes[1] = index_open(idx2, AccessShareLock);
+
+	/*
+	 * Add first pending pair of pages: we start scan both indexes from their
+	 * roots.
+	 */
+	addPendingPair(ctx, GIST_ROOT_BLKNO, GIST_ROOT_BLKNO,
+				   parentnsn, parentnsn);
+}
+
 /*
  * Close SRF call: free occupied resources.
  */
-static void
+void
 closeCall(FuncCallContext *funcctx)
 {
+	elog(LOG, "close call");
 	CrossmatchContext *ctx = (CrossmatchContext *) (funcctx->user_fctx);
 
 	/* Close indexes */
+	indexClose(ctx->indexes[0]);
+	indexClose(ctx->indexes[1]);
+}
+
+void endCall(CrossmatchContext *ctx)
+{
 	indexClose(ctx->indexes[0]);
 	indexClose(ctx->indexes[1]);
 }
@@ -613,4 +644,45 @@ spatialjoin(PG_FUNCTION_ARGS)
 		closeCall(funcctx);
 		SRF_RETURN_DONE(funcctx);
 	}
+}
+
+void
+crossmatch(CrossmatchContext *ctx, ItemPointer values)
+{
+	elog(LOG, "crossmatch call");
+	/* Scan pending pairs until we have some result pairs */
+	while (ctx->resultsPairs == NIL && ctx->pendingPairs != NIL)
+	{
+		PendingPair blockNumberPair;
+
+		elog(LOG, "crossmatch call while");
+
+		blockNumberPair = *((PendingPair *) linitial(ctx->pendingPairs));
+		pfree(linitial(ctx->pendingPairs));
+		ctx->pendingPairs = list_delete_first(ctx->pendingPairs);
+
+		processPendingPair(ctx, blockNumberPair.blk1, blockNumberPair.blk2,
+					 blockNumberPair.parentlsn1, blockNumberPair.parentlsn2);
+	}
+
+	elog(LOG, "crossmatch call 1");
+	/* Return next result pair if any. Otherwise close SRF. */
+	if (ctx->resultsPairs != NIL)
+	{
+		ResultPair *itemPointerPair = (ResultPair *) palloc(sizeof(ResultPair));
+
+		*itemPointerPair = *((ResultPair *) linitial(ctx->resultsPairs));
+		pfree(linitial(ctx->resultsPairs));
+		ctx->resultsPairs = list_delete_first(ctx->resultsPairs);
+
+		values[0] = itemPointerPair->iptr1;
+		values[1] = itemPointerPair->iptr2;
+	}
+	else
+	{
+		ItemPointerSetInvalid(&values[0]);
+		ItemPointerSetInvalid(&values[1]);
+	}
+
+	elog(LOG, "crossmatch call 2");
 }
