@@ -52,9 +52,6 @@ typedef struct CrossmatchContext
 	NDBOX	   *box;
 } CrossmatchContext;
 
-
-Datum		spatialjoin(PG_FUNCTION_ARGS);
-
 /*
  * Pair of pages for pending scan.
  */

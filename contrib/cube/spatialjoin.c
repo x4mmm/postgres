@@ -24,8 +24,6 @@
 #endif
 
 
-PG_FUNCTION_INFO_V1(spatialjoin);
-
 /*
  * Check if relation is index and has specified am oid. Trigger error if not
  */
@@ -52,10 +50,6 @@ addPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 			   GistNSN parentlsn1, GistNSN parentlsn2)
 {
 	PendingPair *blockNumberPair;
-	//MemoryContext oldcontext;
-
-	/* Switch to persistent memory context */
-	//oldcontext = MemoryContextSwitchTo(ctx->context);
 
 	/* Add pending pair */
 	blockNumberPair = (PendingPair *) palloc(sizeof(PendingPair));
@@ -64,9 +58,6 @@ addPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 	blockNumberPair->parentlsn1 = parentlsn1;
 	blockNumberPair->parentlsn2 = parentlsn2;
 	ctx->pendingPairs = lcons(blockNumberPair, ctx->pendingPairs);
-
-	/* Return old memory context */
-	//MemoryContextSwitchTo(oldcontext);
 }
 
 /*
@@ -76,10 +67,6 @@ static void
 addResultPair(CrossmatchContext *ctx, ItemPointer iptr1, ItemPointer iptr2)
 {
 	ResultPair *itemPointerPair;
-	//MemoryContext oldcontext;
-
-	/* Switch to persistent memory context */
-	//oldcontext = MemoryContextSwitchTo(ctx->context);
 
 	/* Add result pair */
 	itemPointerPair = (ResultPair *)
@@ -88,8 +75,6 @@ addResultPair(CrossmatchContext *ctx, ItemPointer iptr1, ItemPointer iptr2)
 	itemPointerPair->iptr2 = *iptr2;
 	ctx->resultsPairs = lappend(ctx->resultsPairs, itemPointerPair);
 
-	/* Return old memory context */
-	//MemoryContextSwitchTo(oldcontext);
 }
 
 /*
@@ -116,60 +101,6 @@ indexClose(Relation r)
 	index_close((r), AccessShareLock);
 }
 
-/*
- * Do necessary initialization for first SRF call.
- */
-static void
-setupFirstcall(FuncCallContext *funcctx, text *names[2])
-{
-	MemoryContext oldcontext;
-	CrossmatchContext *ctx;
-	TupleDesc	tupdesc;
-	GistNSN		parentnsn = InvalidNSN;
-	int			i;
-
-
-	/* Switch to persistent memory context */
-	oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
-
-
-	/* Allocate crossmarch context and fill it with scan parameters */
-	ctx = (CrossmatchContext *) palloc0(sizeof(CrossmatchContext));
-	ctx->context = funcctx->multi_call_memory_ctx;
-
-
-	funcctx->user_fctx = (void *) ctx;
-
-	/* Open both indexes */
-	for (i = 0; i < 2; i++)
-	{
-		char	   *relname = text_to_cstring(names[i]);
-		List	   *relname_list;
-		RangeVar   *relvar;
-
-		relname_list = stringToQualifiedNameList(relname);
-		relvar = makeRangeVarFromNameList(relname_list);
-		ctx->indexes[i] = indexOpen(relvar);
-		pfree(relname);
-	}
-	/*
-	 * Add first pending pair of pages: we start scan both indexes from their
-	 * roots.
-	 */
-	addPendingPair(ctx, GIST_ROOT_BLKNO, GIST_ROOT_BLKNO,
-				   parentnsn, parentnsn);
-
-	/* Describe structure of resulting tuples */
-	tupdesc = CreateTemplateTupleDesc(2, false);
-	TupleDescInitEntry(tupdesc, 1, "ctid1", TIDOID, -1, 0);
-	TupleDescInitEntry(tupdesc, 2, "ctid2", TIDOID, -1, 0);
-	funcctx->slot = TupleDescGetSlot(tupdesc);
-	funcctx->attinmeta = TupleDescGetAttInMetadata(tupdesc);
-
-	/* Return old memory context */
-	MemoryContextSwitchTo(oldcontext);
-}
-
 
 void
 setupFirstcallNode(CrossmatchContext *ctx, Oid idx1, Oid idx2)
@@ -191,18 +122,6 @@ setupFirstcallNode(CrossmatchContext *ctx, Oid idx1, Oid idx2)
 				   parentnsn, parentnsn);
 }
 
-/*
- * Close SRF call: free occupied resources.
- */
-void
-closeCall(FuncCallContext *funcctx)
-{
-	CrossmatchContext *ctx = (CrossmatchContext *) (funcctx->user_fctx);
-
-	/* Close indexes */
-	indexClose(ctx->indexes[0]);
-	indexClose(ctx->indexes[1]);
-}
 
 void endCall(CrossmatchContext *ctx)
 {
@@ -574,75 +493,6 @@ processPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 	UnlockReleaseBuffer(buf2);
 }
 
-/*
- * Crossmatch SRF
- */
-Datum
-spatialjoin(PG_FUNCTION_ARGS)
-{
-	FuncCallContext *funcctx;
-	CrossmatchContext *ctx;
-
-	/*
-	 * Initialize crossmatch context if first call of SRF.
-	 */
-	if (SRF_IS_FIRSTCALL())
-	{
-		text	   *names[2];
-		float8		threshold = PG_GETARG_FLOAT8(2);
-
-		names[0] = PG_GETARG_TEXT_P(0);
-		names[1] = PG_GETARG_TEXT_P(1);
-		funcctx = SRF_FIRSTCALL_INIT();
-
-		setupFirstcall(funcctx, names);
-		PG_FREE_IF_COPY(names[0], 0);
-		PG_FREE_IF_COPY(names[1], 0);
-	}
-
-	funcctx = SRF_PERCALL_SETUP();
-	ctx = (CrossmatchContext *) funcctx->user_fctx;
-
-	/* Scan pending pairs until we have some result pairs */
-	while (ctx->resultsPairs == NIL && ctx->pendingPairs != NIL)
-	{
-		PendingPair blockNumberPair;
-
-		blockNumberPair = *((PendingPair *) linitial(ctx->pendingPairs));
-		pfree(linitial(ctx->pendingPairs));
-		ctx->pendingPairs = list_delete_first(ctx->pendingPairs);
-
-		processPendingPair(ctx, blockNumberPair.blk1, blockNumberPair.blk2,
-					 blockNumberPair.parentlsn1, blockNumberPair.parentlsn2);
-	}
-
-	/* Return next result pair if any. Otherwise close SRF. */
-	if (ctx->resultsPairs != NIL)
-	{
-		Datum		datums[2],
-					result;
-		bool		nulls[2];
-		ResultPair *itemPointerPair = (ResultPair *) palloc(sizeof(ResultPair));
-		HeapTuple	htuple;
-
-		*itemPointerPair = *((ResultPair *) linitial(ctx->resultsPairs));
-		pfree(linitial(ctx->resultsPairs));
-		ctx->resultsPairs = list_delete_first(ctx->resultsPairs);
-		datums[0] = PointerGetDatum(&itemPointerPair->iptr1);
-		datums[1] = PointerGetDatum(&itemPointerPair->iptr2);
-		nulls[0] = false;
-		nulls[1] = false;
-
-		htuple = heap_formtuple(funcctx->attinmeta->tupdesc, datums, nulls);
-		result = TupleGetDatum(funcctx->slot, htuple);
-		SRF_RETURN_NEXT(funcctx, result);
-	}
-	else
-	{
-		closeCall(funcctx);
-		SRF_RETURN_DONE(funcctx);
-	}
-}
 
 void
 crossmatch(CrossmatchContext *ctx, ItemPointer values)

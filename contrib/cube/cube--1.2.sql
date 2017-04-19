@@ -376,10 +376,3 @@ CREATE OPERATOR CLASS gist_cube_ops
 	FUNCTION	6	g_cube_picksplit (internal, internal),
 	FUNCTION	7	g_cube_same (cube, cube, internal),
 	FUNCTION	8	g_cube_distance (internal, cube, smallint, oid, internal);
-
-
-CREATE FUNCTION spatialjoin(text, text)
-   RETURNS SETOF record
-   AS 'MODULE_PATHNAME', 'spatialjoin'
-   LANGUAGE 'c'
-   STABLE STRICT;
