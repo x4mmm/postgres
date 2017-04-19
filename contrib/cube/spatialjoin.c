@@ -23,25 +23,6 @@
 #define heap_formtuple heap_form_tuple
 #endif
 
-
-/*
- * Check if relation is index and has specified am oid. Trigger error if not
- */
-static Relation
-checkOpenedRelation(Relation r, Oid PgAmOid)
-{
-	/*
-	if (r->rd_am == NULL)
-		elog(ERROR, "Relation %s.%s is not an index",
-			 get_namespace_name(RelationGetNamespace(r)),
-			 RelationGetRelationName(r));*/
-	if (r->rd_rel->relam != PgAmOid)
-		elog(ERROR, "Index %s.%s has wrong type",
-			 get_namespace_name(RelationGetNamespace(r)),
-			 RelationGetRelationName(r));
-	return r;
-}
-
 /*
  * Add pending pages pair to context.
  */
@@ -77,20 +58,6 @@ addResultPair(CrossmatchContext *ctx, ItemPointer iptr1, ItemPointer iptr2)
 
 }
 
-/*
- * Open index relation with AccessShareLock.
- */
-static Relation
-indexOpen(RangeVar *relvar)
-{
-#if PG_VERSION_NUM < 90200
-	Oid			relOid = RangeVarGetRelid(relvar, false);
-#else
-	Oid			relOid = RangeVarGetRelid(relvar, NoLock, false);
-#endif
-	return checkOpenedRelation(
-						   index_open(relOid, AccessShareLock), GIST_AM_OID);
-}
 
 /*
  * Close index relation opened with AccessShareLock.
@@ -129,14 +96,6 @@ void endCall(CrossmatchContext *ctx)
 	indexClose(ctx->indexes[1]);
 }
 
-/*
- * Check if two Box3D keys overlaps with given threshold.
- */
-static bool
-checkKeys(CrossmatchContext *ctx, NDBOX* key1, NDBOX* key2)
-{
-	return cube_overlap_v0(key1,key2);
-}
 
 /*
  * Line sweep algorithm on points for find resulting pairs.
@@ -255,12 +214,10 @@ scanForPendingPages(CrossmatchContext *ctx, Buffer *buf, BlockNumber otherblk,
 			ItemId		iid = PageGetItemId(page, i);
 			IndexTuple	idxtuple = (IndexTuple) PageGetItem(page, iid);
 			BlockNumber childblkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
-			NDBOX *key;
-			Datum		val;
 			bool		isnull;
 
 			/* Get index key value */
-			val = index_getattr(idxtuple, 1, ctx->indexes[num - 1]->rd_att, &isnull);
+			index_getattr(idxtuple, 1, ctx->indexes[num - 1]->rd_att, &isnull);
 
 			/* Skip if null */
 			if (isnull)

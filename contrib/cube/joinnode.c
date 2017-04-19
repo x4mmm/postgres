@@ -1,20 +1,5 @@
 #include "joinnode.h"
 
-
-static float8
-cstring_to_float8(char *str)
-{
-	return DatumGetFloat8(DirectFunctionCall1(float8in,
-											  CStringGetDatum(str)));
-}
-
-static char *
-float8_to_cstring(float8 val)
-{
-	return DatumGetCString(DirectFunctionCall1(float8out,
-											   Float8GetDatum(val)));
-}
-
 static Oid
 pick_suitable_index(RelOptInfo *relation, AttrNumber column)
 {
@@ -60,27 +45,21 @@ static void
 get_spoint_attnums(OpExpr *fexpr, RelOptInfo *outer, RelOptInfo *inner,
 				   AttrNumber *outer_spoint, AttrNumber *inner_spoint)
 {
-	ListCell *dist_arg;
+	Var *arg;
 
 	Assert(outer->relid != 0 && inner->relid != 0);
 
-	Var *arg = (Var *) linitial(fexpr->args);
+	arg = (Var *) linitial(fexpr->args);
+	if (arg->varno == outer->relid)
+		*outer_spoint = arg->varoattno;
+	if (arg->varno == inner->relid)
+		*inner_spoint = arg->varoattno;
 
-			if (arg->varno == outer->relid)
-			*outer_spoint = arg->varoattno;
-
-			if (arg->varno == inner->relid)
-			*inner_spoint = arg->varoattno;
-
-
-		arg = (Var *) lsecond(fexpr->args);
-
-				if (arg->varno == outer->relid)
-					*outer_spoint = arg->varoattno;
-
-				if (arg->varno == inner->relid)
-					*inner_spoint = arg->varoattno;
-
+	arg = (Var *) lsecond(fexpr->args);
+	if (arg->varno == outer->relid)
+		*outer_spoint = arg->varoattno;
+	if (arg->varno == inner->relid)
+		*inner_spoint = arg->varoattno;
 }
 
 static Path *
@@ -499,9 +478,8 @@ crossmatch_exec(CustomScanState *node)
 
 	for (;;)
 	{
-		ExprDoneCond isDone;
 #if PG_VERSION_NUM < 100000
-		
+		ExprDoneCond isDone;
 		if (!node->ss.ps.ps_TupFromTlist)
 #endif
 		{

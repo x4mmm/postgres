@@ -85,5 +85,9 @@ typedef struct
 	GistNSN		parentlsn;
 } Box3DInfo;
 
+extern void setupFirstcallNode(CrossmatchContext *ctx, Oid idx1, Oid idx2);
+extern void endCall(CrossmatchContext *ctx);
+extern void crossmatch(CrossmatchContext *ctx, ItemPointer values);
+
 #endif
 
