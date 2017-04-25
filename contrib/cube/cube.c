@@ -103,7 +103,7 @@ static	bool		g_cube_internal_consistent(NDBOX *key, NDBOX *query, StrategyNumber
 ** Auxiliary funxtions
 */
 static double distance_1D(double a1, double a2, double b1, double b2);
-static bool cube_is_point_internal(NDBOX *cube);
+
 
 
 /*****************************************************************************
@@ -1450,7 +1450,7 @@ cube_is_point(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(result);
 }
 
-static bool
+bool
 cube_is_point_internal(NDBOX *cube)
 {
 	int			i;
@@ -1776,5 +1776,66 @@ cube_c_f8_f8(PG_FUNCTION_ARGS)
 	PG_RETURN_NDBOX(result);
 }
 
+NDBOX *
+cube_intersect_v0(NDBOX *a, NDBOX *b)
+{
+	int			i;
+	NDBOX	   *result;
+	int			dim;
+	int			size;
 
+	/* trivial case */
+	if (a == b)
+		return a;
 
+	/* swap the arguments if needed, so that 'a' is always larger than 'b' */
+	if (DIM(a) < DIM(b))
+	{
+		NDBOX	   *tmp = b;
+
+		b = a;
+		a = tmp;
+	}
+	dim = DIM(a);
+
+	size = CUBE_SIZE(dim);
+	result = palloc0(size);
+	SET_VARSIZE(result, size);
+	SET_DIM(result, dim);
+
+	/* First compute the union of the dimensions present in both args */
+	for (i = 0; i < DIM(b); i++)
+	{
+		result->x[i] = Max(
+			Min(LL_COORD(a, i), UR_COORD(a, i)),
+			Min(LL_COORD(b, i), UR_COORD(b, i))
+			);
+		result->x[i + DIM(a)] = Min(
+			Max(LL_COORD(a, i), UR_COORD(a, i)),
+			Max(LL_COORD(b, i), UR_COORD(b, i))
+			);
+	}
+	/* continue on the higher dimensions only present in 'a' */
+	for (; i < DIM(a); i++)
+	{
+		result->x[i] = Max(0,
+			Min(LL_COORD(a, i), UR_COORD(a, i))
+			);
+		result->x[i + dim] = Min(0,
+			Max(LL_COORD(a, i), UR_COORD(a, i))
+			);
+	}
+
+	/*
+	* Check if the result was in fact a point, and set the flag in the datum
+	* accordingly. (we don't bother to repalloc it smaller)
+	*/
+	if (cube_is_point_internal(result))
+	{
+		size = POINT_SIZE(dim);
+		SET_VARSIZE(result, size);
+		SET_POINT_BIT(result);
+	}
+
+	return (result);
+}

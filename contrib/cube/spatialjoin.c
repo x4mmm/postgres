@@ -4,6 +4,7 @@
 
 #include "access/gist.h"
 #include "access/gist_private.h"
+#include "utils/memutils.h"
 #if PG_VERSION_NUM >= 90300
 #include "access/htup_details.h"
 #endif
@@ -97,6 +98,135 @@ void endCall(CrossmatchContext *ctx)
 }
 
 
+
+NDBOX *
+cube_union_b3(Box3DInfo *a, int n)
+{
+	int			i, o;
+	NDBOX	   *result;
+	int			size;
+	int			dim = 0;
+
+
+	for (i = 0; i < n; i++)
+		{
+			if (DIM(a[i].cube) > dim)
+				dim = DIM(a[i].cube);
+		}
+
+	size = CUBE_SIZE(dim);
+	result = palloc0(size);
+	SET_VARSIZE(result, size);
+	SET_DIM(result, dim);
+
+	for (i = 0; i < dim; i++)
+	{
+		result->x[i] = DBL_MAX;
+		result->x[i + dim] = DBL_MIN;
+	}
+
+	for (o = 0; o < n; o++)
+		for (i = 0; i < dim; i++)
+		{
+			if (DIM(a[o].cube) <= i)
+				break;
+			result->x[i] = Min(
+				Min(LL_COORD(a[o].cube, i), UR_COORD(a[o].cube, i)),
+				LL_COORD(result, i)
+				);
+			result->x[i + dim] = Max(
+				Max(LL_COORD(a[o].cube, i), UR_COORD(a[o].cube, i)),
+				UR_COORD(result, i)
+				);
+		}
+	for (i = 0; i < dim; i++)
+	{
+		if(result->x[i] == DBL_MAX && result->x[i + dim] == DBL_MIN)
+		{
+			result->x[i] = 0;
+			result->x[i + dim] = 0;
+		}
+	}
+
+	/*
+	* Check if the result was in fact a point, and set the flag in the datum
+	* accordingly. (we don't bother to repalloc it smaller)
+	*/
+	if (cube_is_point_internal(result))
+	{
+		size = POINT_SIZE(dim);
+		SET_VARSIZE(result, size);
+		SET_POINT_BIT(result);
+	}
+
+	return (result);
+}
+
+NDBOX *
+cube_union_pi(PointInfo *a, int n)
+{
+	int			i, o;
+	NDBOX	   *result;
+	int			size;
+	int			dim = 0;
+
+
+	for (i = 0; i < n; i++)
+		{
+			if (DIM(a[i].cube) > dim)
+				dim = DIM(a[i].cube);
+		}
+
+	size = CUBE_SIZE(dim);
+	result = palloc0(size);
+	SET_VARSIZE(result, size);
+	SET_DIM(result, dim);
+
+	for (i = 0; i < dim; i++)
+	{
+		result->x[i] = DBL_MAX;
+		result->x[i + dim] = DBL_MIN;
+	}
+
+	for (o = 0; o < n; o++)
+		for (i = 0; i < dim; i++)
+		{
+			if (DIM(a[o].cube) <= i)
+				break;
+			result->x[i] = Min(
+				Min(LL_COORD(a[o].cube, i), UR_COORD(a[o].cube, i)),
+				LL_COORD(result, i)
+				);
+			result->x[i + dim] = Max(
+				Max(LL_COORD(a[o].cube, i), UR_COORD(a[o].cube, i)),
+				UR_COORD(result, i)
+				);
+		}
+	for (i = 0; i < dim; i++)
+	{
+		if(result->x[i] == DBL_MAX && result->x[i + dim] == DBL_MIN)
+		{
+			result->x[i] = 0;
+			result->x[i + dim] = 0;
+		}
+	}
+
+	/*
+	* Check if the result was in fact a point, and set the flag in the datum
+	* accordingly. (we don't bother to repalloc it smaller)
+	*/
+	if (cube_is_point_internal(result))
+	{
+		size = POINT_SIZE(dim);
+		SET_VARSIZE(result, size);
+		SET_POINT_BIT(result);
+	}
+
+	return (result);
+}
+
+
+
 /*
  * Line sweep algorithm on points for find resulting pairs.
  */
@@ -105,14 +235,32 @@ pointLineSweep(CrossmatchContext *ctx, PointInfo *points1, int count1,
 			   PointInfo *points2, int count2)
 {
 	int	i1,i2;
-	for (i1 = 0; i1 < count1; i1++)
-		for (i2 = 0; i2 < count2; i2++)
+	int i3 = 0;
+	NDBOX* x = cube_intersect_v0(cube_union_pi(points1,count1),cube_union_pi(points2,count2));
+	for (i2 = 0; i2 < count2; i2++)
+	{
+		if(cube_overlap_v0(x,points2[i2].cube))
 		{
-			if(cube_overlap_v0(points1[i1].cube,points2[i2].cube))
-			{
-				addResultPair(ctx, &points1[i1].iptr, &points2[i2].iptr);
-			}
+			points2[i3]	= points2[i2];
+			i3++;
 		}
+	}
+
+
+	for (i1 = 0; i1 < count1; i1++)
+	{
+		if(!cube_overlap_v0(points1[i1].cube,x))
+			continue;
+
+		for (i2 = 0; i2 < i3; i2++)
+				{
+					if(cube_overlap_v0(points1[i1].cube,points2[i2].cube))
+					{
+						addResultPair(ctx, &points1[i1].iptr, &points2[i2].iptr);
+					}
+				}
+	}
+
 }
 
 /*
@@ -150,15 +298,34 @@ box3DLineSweep(CrossmatchContext *ctx, Box3DInfo *boxes1, int count1,
 			   Box3DInfo *boxes2, int count2)
 {
 	int	i1,i2;
-	for (i1 = 0; i1 < count1; i1++)
-		for (i2 = 0; i2 < count2; i2++)
+
+
+	int i3 = 0;
+	NDBOX* x = cube_intersect_v0(cube_union_b3(boxes1,count1),cube_union_b3(boxes2,count2));
+	for (i2 = 0; i2 < count2; i2++)
+	{
+		if(cube_overlap_v0(x,boxes2[i2].cube))
 		{
-			if(cube_overlap_v0(boxes1[i1].cube,boxes2[i2].cube))
-			{
-				addPendingPair(ctx, boxes1[i1].blk, boxes2[i2].blk,
-							   boxes1[i1].parentlsn, boxes2[i2].parentlsn);
-			}
+			boxes2[i3]	= boxes2[i2];
+			i3++;
 		}
+	}
+
+	for (i1 = 0; i1 < count1; i1++)
+	{
+
+		if(!cube_overlap_v0(boxes1[i1].cube,x))
+			continue;
+
+		for (i2 = 0; i2 < i3; i2++)
+				{
+					if(cube_overlap_v0(boxes1[i1].cube,boxes2[i2].cube))
+					{
+						addPendingPair(ctx, boxes1[i1].blk, boxes2[i2].blk,
+									   boxes1[i1].parentlsn, boxes2[i2].parentlsn);
+					}
+				}
+	}
 }
 
 /*
@@ -429,9 +596,16 @@ processPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 		int			pi1,
 					pi2;
 
+		MemoryContext tempCtx = AllocSetContextCreate(CurrentMemoryContext,"processPendingPair",ALLOCSET_DEFAULT_SIZES);
+		MemoryContext saveContext = MemoryContextSwitchTo(tempCtx);
+
 		points1 = readPoints(ctx, &buf1, parentlsn1, 1, &pi1);
 		points2 = readPoints(ctx, &buf2, parentlsn2, 2, &pi2);
+
+		MemoryContextSwitchTo(saveContext);
 		pointLineSweep(ctx, points1, pi1, points2, pi2);
+
+		MemoryContextDelete(tempCtx);
 	}
 	else
 	{
@@ -441,9 +615,15 @@ processPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 		int			bi1,
 					bi2;
 
+		MemoryContext tempCtx = AllocSetContextCreate(CurrentMemoryContext,"processPendingPair",ALLOCSET_DEFAULT_SIZES);
+				MemoryContext saveContext = MemoryContextSwitchTo(tempCtx);
+
 		boxes1 = readBoxes(ctx, &buf1, parentlsn1, 1, &bi1);
 		boxes2 = readBoxes(ctx, &buf2, parentlsn2, 2, &bi2);
+
+		MemoryContextSwitchTo(saveContext);
 		box3DLineSweep(ctx, boxes1, bi1, boxes2, bi2);
+		MemoryContextDelete(tempCtx);
 	}
 
 	UnlockReleaseBuffer(buf1);

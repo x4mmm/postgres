@@ -69,3 +69,6 @@ extern void cube_scanner_finish(void);
 extern int	cube_yyparse(NDBOX **result);
 
 extern bool		cube_overlap_v0(NDBOX *a, NDBOX *b);
+
+extern NDBOX	   *cube_intersect_v0(NDBOX *a, NDBOX *b);
+extern bool cube_is_point_internal(NDBOX *cube);
