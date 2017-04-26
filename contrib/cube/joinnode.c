@@ -436,12 +436,15 @@ fetch_next_pair(CrossmatchScanState *scan_state)
 												 scan_state->outer->rd_att,
 												 &nulls[col_index]);
 			}
-
-			if (var->varno == scan_state->inner_relid)
+			else if (var->varno == scan_state->inner_relid)
 			{
 				values[col_index] = heap_getattr(&htup_inner, var->varattno,
 												 scan_state->outer->rd_att,
 												 &nulls[col_index]);
+			}
+			else
+			{
+				elog(ERROR,"scanlist entry from other rel");
 			}
 
 			col_index++;
@@ -450,8 +453,9 @@ fetch_next_pair(CrossmatchScanState *scan_state)
 		htup = heap_form_tuple(tupdesc, values, nulls);
 
 		/* Fill scanSlot with a new tuple */
-		ExecStoreTuple(htup, slot, InvalidBuffer, false);
+		ExecStoreTuple(htup, slot, InvalidBuffer, true);
 	}
+
 
 	if (buf1 != InvalidBuffer)
 		ReleaseBuffer(buf1);

@@ -232,11 +232,12 @@ cube_union_pi(PointInfo *a, int n)
  */
 static void
 pointLineSweep(CrossmatchContext *ctx, PointInfo *points1, int count1,
-			   PointInfo *points2, int count2)
+			   PointInfo *points2, int count2, MemoryContext workContext)
 {
 	int	i1,i2;
 	int i3 = 0;
 	NDBOX* x = cube_intersect_v0(cube_union_pi(points1,count1),cube_union_pi(points2,count2));
+	MemoryContextSwitchTo(workContext);
 	for (i2 = 0; i2 < count2; i2++)
 	{
 		if(cube_overlap_v0(x,points2[i2].cube))
@@ -295,13 +296,15 @@ fillPointInfo(PointInfo *point, CrossmatchContext *ctx, IndexTuple itup,
  */
 static void
 box3DLineSweep(CrossmatchContext *ctx, Box3DInfo *boxes1, int count1,
-			   Box3DInfo *boxes2, int count2)
+			   Box3DInfo *boxes2, int count2, MemoryContext workContext)
 {
 	int	i1,i2;
 
 
 	int i3 = 0;
 	NDBOX* x = cube_intersect_v0(cube_union_b3(boxes1,count1),cube_union_b3(boxes2,count2));
+	MemoryContextSwitchTo(workContext);
+
 	for (i2 = 0; i2 < count2; i2++)
 	{
 		if(cube_overlap_v0(x,boxes2[i2].cube))
@@ -310,6 +313,7 @@ box3DLineSweep(CrossmatchContext *ctx, Box3DInfo *boxes1, int count1,
 			i3++;
 		}
 	}
+
 
 	for (i1 = 0; i1 < count1; i1++)
 	{
@@ -602,8 +606,8 @@ processPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 		points1 = readPoints(ctx, &buf1, parentlsn1, 1, &pi1);
 		points2 = readPoints(ctx, &buf2, parentlsn2, 2, &pi2);
 
-		MemoryContextSwitchTo(saveContext);
-		pointLineSweep(ctx, points1, pi1, points2, pi2);
+
+		pointLineSweep(ctx, points1, pi1, points2, pi2, saveContext);
 
 		MemoryContextDelete(tempCtx);
 	}
@@ -621,8 +625,8 @@ processPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 		boxes1 = readBoxes(ctx, &buf1, parentlsn1, 1, &bi1);
 		boxes2 = readBoxes(ctx, &buf2, parentlsn2, 2, &bi2);
 
-		MemoryContextSwitchTo(saveContext);
-		box3DLineSweep(ctx, boxes1, bi1, boxes2, bi2);
+
+		box3DLineSweep(ctx, boxes1, bi1, boxes2, bi2, saveContext);
 		MemoryContextDelete(tempCtx);
 	}
 
@@ -651,14 +655,12 @@ crossmatch(CrossmatchContext *ctx, ItemPointer values)
 	/* Return next result pair if any. Otherwise close SRF. */
 	if (ctx->resultsPairs != NIL)
 	{
-		ResultPair *itemPointerPair = (ResultPair *) palloc(sizeof(ResultPair));
-
-		*itemPointerPair = *((ResultPair *) linitial(ctx->resultsPairs));
+		ResultPair itemPointerPair = *((ResultPair *) linitial(ctx->resultsPairs));
 		pfree(linitial(ctx->resultsPairs));
 		ctx->resultsPairs = list_delete_first(ctx->resultsPairs);
 
-		values[0] = itemPointerPair->iptr1;
-		values[1] = itemPointerPair->iptr2;
+		values[0] = itemPointerPair.iptr1;
+		values[1] = itemPointerPair.iptr2;
 	}
 	else
 	{
