@@ -99,7 +99,7 @@ void endCall(CrossmatchContext *ctx)
 
 
 
-NDBOX *
+static NDBOX *
 cube_union_b3(Box3DInfo *a, int n)
 {
 	int			i, o;
@@ -139,6 +139,7 @@ cube_union_b3(Box3DInfo *a, int n)
 				UR_COORD(result, i)
 				);
 		}
+	/*
 	for (i = 0; i < dim; i++)
 	{
 		if(result->x[i] == DBL_MAX && result->x[i + dim] == DBL_MIN)
@@ -147,22 +148,23 @@ cube_union_b3(Box3DInfo *a, int n)
 			result->x[i + dim] = 0;
 		}
 	}
-
+*/
 	/*
 	* Check if the result was in fact a point, and set the flag in the datum
 	* accordingly. (we don't bother to repalloc it smaller)
 	*/
+	/*
 	if (cube_is_point_internal(result))
 	{
 		size = POINT_SIZE(dim);
 		SET_VARSIZE(result, size);
 		SET_POINT_BIT(result);
-	}
+	}*/
 
 	return (result);
 }
 
-NDBOX *
+static NDBOX *
 cube_union_pi(PointInfo *a, int n)
 {
 	int			i, o;
@@ -191,17 +193,16 @@ cube_union_pi(PointInfo *a, int n)
 	for (o = 0; o < n; o++)
 		for (i = 0; i < dim; i++)
 		{
-			if (DIM(a[o].cube) <= i)
-				break;
 			result->x[i] = Min(
-				Min(LL_COORD(a[o].cube, i), UR_COORD(a[o].cube, i)),
+				LL_COORD(a[o].cube, i),
 				LL_COORD(result, i)
 				);
 			result->x[i + dim] = Max(
-				Max(LL_COORD(a[o].cube, i), UR_COORD(a[o].cube, i)),
+				UR_COORD(a[o].cube, i),
 				UR_COORD(result, i)
 				);
 		}
+	/*
 	for (i = 0; i < dim; i++)
 	{
 		if(result->x[i] == DBL_MAX && result->x[i + dim] == DBL_MIN)
@@ -209,18 +210,20 @@ cube_union_pi(PointInfo *a, int n)
 			result->x[i] = 0;
 			result->x[i + dim] = 0;
 		}
-	}
+	}*/
 
 	/*
 	* Check if the result was in fact a point, and set the flag in the datum
 	* accordingly. (we don't bother to repalloc it smaller)
 	*/
+	/*
 	if (cube_is_point_internal(result))
 	{
 		size = POINT_SIZE(dim);
 		SET_VARSIZE(result, size);
 		SET_POINT_BIT(result);
 	}
+	*/
 
 	return (result);
 }
