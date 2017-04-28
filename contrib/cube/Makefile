@@ -1,7 +1,11 @@
 # contrib/cube/Makefile
 
 MODULE_big = cube
-OBJS= cube.o cubeparse.o $(WIN32RES)
+OBJS= cube.o spatialjoin.o joinnode.o cubeparse.o $(WIN32RES)
+
+
+CUSTOM_COPT = -O3 
+#-msse4.2 -funroll-loops -ftree-vectorize -mavx
 
 EXTENSION = cube
 DATA = cube--1.2.sql cube--1.1--1.2.sql cube--1.0--1.1.sql \
